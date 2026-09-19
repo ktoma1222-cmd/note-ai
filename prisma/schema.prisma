@@ -1,0 +1,343 @@
+// NOTE AI - Prisma schema
+// ローカル開発は SQLite。将来 PostgreSQL(Supabase) へ移行する際は
+// datasource の provider/url を切り替えて `prisma migrate` を再実行するだけでよい設計。
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN
+  MANAGER
+  STAFF
+}
+
+model User {
+  id             String   @id @default(cuid())
+  email          String   @unique
+  pinHash        String? // ログイン用PIN(6〜8桁の数字)のbcryptハッシュ。未設定の間はログイン不可
+  name           String
+  role           Role     @default(STAFF)
+  sessionVersion Int      @default(0) // ログアウト時にインクリメントし、それ以前に発行済みのJWTを無効化する
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  storeAccess       StoreAccess[]
+  auditLogs         AuditLog[]
+  googleConnections GoogleConnection[]
+
+  @@map("users")
+}
+
+// GoogleアカウントのOAuth接続情報(PLスプレッドシート読み取り用)
+model GoogleConnection {
+  id           String   @id @default(cuid())
+  userId       String
+  googleEmail  String
+  refreshToken String // AES-256-GCMで暗号化して保存(lib/crypto.ts参照)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("google_connections")
+}
+
+// Manager が担当する店舗の紐付け(多対多)
+model StoreAccess {
+  id      String @id @default(cuid())
+  userId  String
+  storeId String
+
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  store Store @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, storeId])
+  @@map("store_access")
+}
+
+// 店舗マスタ。店舗名はコード中にハードコードしない。追加/編集/非表示/削除/並び替え/グループ集計対象設定は
+// すべてこのテーブルの行操作で完結する。
+model Store {
+  id             String   @id @default(cuid())
+  name           String
+  sortOrder      Int      @default(0)
+  isActive       Boolean  @default(true) // false = 非表示
+  includeInGroup Boolean  @default(true) // NOTE GROUP集計に含めるか
+  notionLabel    String?  // Notion「店舗名」select値との対応付け(例: "焼肉割烹 ノ音")
+  googleSheetId  String?  // PLスプレッドシートのID(Google Sheets連携)
+  googleSheetGid Int?     // 対象シートタブのgid(URLのgidパラメータ。未指定なら先頭シート)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  storeAccess          StoreAccess[]
+  monthlyPLs           MonthlyPL[]
+  telecomSecurityItems TelecomSecurityItem[]
+  visits               Visit[]
+  reservations         Reservation[]
+  tableCheckMappings   TableCheckStoreMapping[]
+
+  @@map("stores")
+}
+
+// 月次PL。主要項目は専用カラム(頻繁な計算・比較対象のため)。
+model MonthlyPL {
+  id      String @id @default(cuid())
+  storeId String
+  year    Int
+  month   Int // 1-12
+
+  revenue Float @default(0) // 売上高
+
+  foodPurchase        Float @default(0) // 食材仕入
+  suppliesPurchase    Float @default(0) // 備品仕入
+  inventoryBeginning  Float @default(0) // 月初棚卸(将来の完全原価計算用)
+  inventoryEnding     Float @default(0) // 棚卸高(月末)
+
+  staffLaborBase        Float @default(0) // 社員給与
+  staffLaborTransport   Float @default(0) // 社員交通費
+  partTimeLaborBase     Float @default(0) // アルバイト給与
+  partTimeLaborTransport Float @default(0) // アルバイト交通費
+
+  rent          Float @default(0) // 家賃
+  advertising   Float @default(0) // 広告宣伝費
+  utilities     Float @default(0) // 水道光熱費
+  welfare       Float @default(0) // 福利厚生費
+
+  telecomSecurityTotal Float @default(0) // 通信警備費(内訳合計と同期)
+  otherExpenses        Float @default(0) // その他経費(消耗品・修繕費・その他支払い・環境オプティマル等の合算)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  updatedBy String?
+
+  store                  Store                   @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  telecomSecurityDetails TelecomSecurityDetail[]
+
+  @@unique([storeId, year, month])
+  @@map("monthly_pl")
+}
+
+// 通信警備費の内訳マスタ(店舗ごとに管理、初期シード: USEN/スマレジ/Wi-Fi/FOOD系/Take系/TableCheck/その他)
+model TelecomSecurityItem {
+  id        String  @id @default(cuid())
+  storeId   String
+  name      String
+  sortOrder Int     @default(0)
+  isActive  Boolean @default(true)
+
+  store   Store                    @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  details TelecomSecurityDetail[]
+
+  @@map("telecom_security_items")
+}
+
+model TelecomSecurityDetail {
+  id                    String @id @default(cuid())
+  monthlyPLId           String
+  telecomSecurityItemId String
+  amount                Float  @default(0)
+
+  monthlyPL           MonthlyPL           @relation(fields: [monthlyPLId], references: [id], onDelete: Cascade)
+  telecomSecurityItem TelecomSecurityItem @relation(fields: [telecomSecurityItemId], references: [id], onDelete: Cascade)
+
+  @@unique([monthlyPLId, telecomSecurityItemId])
+  @@map("telecom_security_details")
+}
+
+enum ReservationStatus {
+  CONFIRMED
+  REQUESTED
+  CANCELLED
+  UNKNOWN
+}
+
+// 顧客マスタ。Notion同期時にdedupKey(電話→メール→氏名の優先順)でupsertする。
+model Customer {
+  id                 String   @id @default(cuid())
+  dedupKey           String   @unique
+  name               String
+  phone              String?
+  email              String?
+  isRepeaterOverride Boolean? // 管理者による手動上書き。nullなら直近来店の自動判定に従う
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  visits Visit[]
+
+  @@map("customers")
+}
+
+// 来店(予約)。Notionの1行=1レコードとして同期する(notionPageIdが同期のupsertキー)。
+model Visit {
+  id                String            @id @default(cuid())
+  notionPageId      String            @unique
+  customerId        String
+  storeId           String
+  visitDateTime     DateTime?
+  visitYear         Int
+  visitMonth        Int
+  partySize         Int?
+  status            ReservationStatus
+  isNewVisit        Boolean // Notion「ご利用回数」=初来店 なら true
+  countryRaw        String? // Notion「国籍」(生入力)
+  country           String? // Notion「国名（整理）」
+  region            String? // Notion「地域」(日本は独立値)
+  purpose           String? // Notion「用途」
+  purposeCategory   String? // Notion「用途（分類）」
+  reservationSource String  @default("TableCheck")
+  notes             String? // アレルギー・備考
+  orderNotes        String? // ご注文
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  store    Store    @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  @@map("visits")
+}
+
+// AIチャットのユーザーごとの簡易レート制限(直近5分間の送信回数)。
+// メッセージ長・送信回数の制限が一切無いと、STAFF含む誰でも無制限に有料/無料枠のGemini APIを
+// 呼び出せてしまうため導入した(セキュリティ監査finding: ai-chat-no-rate-limit)。
+model ChatUsage {
+  userId      String   @id
+  windowStart DateTime
+  count       Int      @default(0)
+
+  @@map("chat_usage")
+}
+
+// ログインPINの連続失敗回数とロック状態(単一行のみ)。開発サーバーの再実行(HMR)でも
+// 状態が消えないよう、メモリ変数ではなくDBに永続化する。
+model LoginLockState {
+  id             String    @id @default("singleton")
+  failedAttempts Int       @default(0)
+  lockedUntil    DateTime?
+  updatedAt      DateTime  @updatedAt
+
+  @@map("login_lock_state")
+}
+
+// 外部連携の同期状態(1ソース1行)
+model SyncState {
+  id           String    @id // 例: "notion"
+  lastSyncedAt DateTime?
+  lastResult   String? // JSON文字列: {created, updated, skippedStores, errors}
+  updatedAt    DateTime  @updatedAt
+
+  @@map("sync_state")
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  userId     String?
+  action     String
+  targetType String
+  targetId   String?
+  detail     String? // JSON文字列
+  createdAt  DateTime @default(now())
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@map("audit_logs")
+}
+
+enum ReservationSource {
+  TABLECHECK_CSV
+  NOTION
+  GMAIL
+  MANUAL
+}
+
+enum NotionSyncStatus {
+  NOT_SYNCED
+  SYNCED
+  ERROR
+}
+
+// TableCheck CSV取込による予約データ(将来的にNotionへの反映も想定した独立テーブル)。
+// Visitとは別モデル: VisitはnotionPageIdが必須のNotion専用モデルのため、
+// Notionに未反映の予約を保持できない制約がある。
+model Reservation {
+  id                    String            @id @default(cuid())
+  externalReservationId String?           @unique // TableCheck予約ID(取得できた場合のみ)
+  storeId               String
+  customerName          String
+  phone                 String?
+  email                 String?
+  visitDate             DateTime
+  visitTime             String? // "18:30" 等、CSV表記をなるべくそのまま保持
+  partySize             Int?
+  status                ReservationStatus @default(UNKNOWN)
+  country               String?
+  region                String?
+  reservationSource     String            @default("TableCheck") // 集客チャネル(Visit.reservationSourceと同義)
+  purpose               String?
+  isRepeat              Boolean?
+  estimatedAmount       Float? // CSV「注文合計金額」(コース料金×人数の予約金額)。予想売上算出に使う
+  source                ReservationSource @default(TABLECHECK_CSV) // データの取り込み経路
+  rawSourceData         String? // CSV1行分の生データ(JSON文字列)
+  notionPageId          String?           @unique // PHASE 2でNotion同期時に設定
+  notionSyncedAt        DateTime?
+  notionSyncStatus      NotionSyncStatus  @default(NOT_SYNCED)
+  tablecheckCreatedAt   DateTime?
+  tablecheckUpdatedAt   DateTime?
+  createdAt             DateTime          @default(now())
+  updatedAt             DateTime          @updatedAt
+
+  store Store @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  @@map("reservations")
+}
+
+// previewTableCheckCsvAction が解析・分類した結果をサーバー側に保持するための一時セッション。
+// confirmTableCheckCsvImportAction はここに保存された値のみを書き込みに使い、
+// クライアントから送られてきたデータ(devtools等で改ざん可能)は一切信用しない設計にするため導入した
+// (セキュリティ監査finding: tablecheck-confirm-trusts-client-payload / tablecheck-preview-bulk-pii-to-client)。
+model TableCheckImportSession {
+  id        String   @id @default(cuid())
+  filename  String
+  createdAt DateTime @default(now())
+  expiresAt DateTime
+  rowsJson  String // JSON文字列: 内部用PreviewRowResult[](マスクなしの生データを含む、クライアントには渡さない)
+
+  @@map("tablecheck_import_sessions")
+}
+
+// TableCheck CSV取込1回分の実行履歴
+model ReservationImportLog {
+  id             String   @id @default(cuid())
+  filename       String
+  importedAt     DateTime @default(now())
+  importedBy     String? // User.id(退職等でユーザーが消えても履歴は残すため外部キーにはしない)
+  totalCount     Int
+  newCount       Int
+  updatedCount   Int
+  cancelledCount Int
+  unchangedCount Int
+  duplicateCount Int
+  errorCount     Int
+  errorDetail    String? // JSON文字列(エラー詳細の配列)
+
+  @@map("reservation_import_logs")
+}
+
+// TableCheck CSV上の店舗名表記(表記ゆれ含む) ⇔ NOTE AI Storeの対応表。
+// 1つのStoreに複数のrawLabelが紐づきうる(NotionのnotionLabelとは1対多である点が異なる)。
+model TableCheckStoreMapping {
+  id        String   @id @default(cuid())
+  rawLabel  String   @unique
+  storeId   String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  store Store? @relation(fields: [storeId], references: [id], onDelete: SetNull)
+
+  @@map("tablecheck_store_mappings")
+}
