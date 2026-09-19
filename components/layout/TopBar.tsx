@@ -12,7 +12,14 @@ export function TopBar({ stores }: { stores: StoreOption[] }) {
   const router = useRouter();
   const searchParams = useSearchParams();
 
-  const store = searchParams.get("store") ?? "group";
+  // PL画面は店舗ごとにURLパス自体が分かれている(/pl/group または /pl/<storeId>)ため、
+  // 現在選択中の店舗はクエリパラメータではなくパスから判定する必要がある
+  // (そうしないと、検索結果等から直接/pl/<storeId>に来た際にセレクターが常に「NOTE GROUP」と表示されてしまう)。
+  const plPathStoreMatch = pathname.match(/^\/pl\/([^/]+)$/);
+  const storeFromPlPath =
+    plPathStoreMatch && plPathStoreMatch[1] !== "input" ? plPathStoreMatch[1] : null;
+
+  const store = storeFromPlPath ?? searchParams.get("store") ?? "group";
   const year = searchParams.get("year") ?? String(new Date().getFullYear());
   const month = searchParams.get("month") ?? String(new Date().getMonth() + 1);
   const isYearly = searchParams.get("month") === "ALL";
@@ -70,6 +77,17 @@ export function TopBar({ stores }: { stores: StoreOption[] }) {
   function update(next: Record<string, string>) {
     const params = new URLSearchParams(searchParams.toString());
     Object.entries(next).forEach(([k, v]) => params.set(k, v));
+
+    // PL画面(/pl/group, /pl/<storeId>)は店舗ごとにパス自体が分かれているため、店舗切り替え時は
+    // クエリパラメータではなくパスそのものを変更する。これを行わないと、店舗を選択しても常に
+    // 同じページ(多くの場合/pl/group)に留まり、実際には店舗が切り替わらない不具合になる。
+    if (next.store !== undefined && storeFromPlPath !== null) {
+      params.delete("store");
+      const targetPathname = next.store === "group" ? "/pl/group" : `/pl/${next.store}`;
+      router.push(`${targetPathname}?${params.toString()}`);
+      return;
+    }
+
     router.push(`${pathname}?${params.toString()}`);
   }
 

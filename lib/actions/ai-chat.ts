@@ -35,10 +35,19 @@ async function consumeRateLimit(userId: string): Promise<boolean> {
   return true;
 }
 
+// 2026-09-20、ユーザー判断によりAIチャット(Gemini連携)を停止した。UI(ナビゲーション・/aiページ)
+// からは既に到達できないが、このアクション自体にも停止フラグを置き、Gemini APIには
+// 絶対に到達しないようにする(コード自体は再開に備えて残す)。
+const AI_CHAT_ENABLED = false;
+
 export async function sendChatMessageAction(
   history: ChatMessage[],
   message: string
 ): Promise<SendChatMessageResult> {
+  if (!AI_CHAT_ENABLED) {
+    return { ok: false, error: "現在、AIチャット機能は停止しています。" };
+  }
+
   const session = await getSession();
   if (!session) {
     return { ok: false, error: "ログインが必要です。" };

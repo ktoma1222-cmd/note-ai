@@ -22,7 +22,6 @@ const PAGES: PageEntry[] = [
   { label: "PL入力", href: "/pl/input", keywords: ["pl入力", "入力"] },
   { label: "Customers", href: "/customers", keywords: ["顧客", "customers", "来店"] },
   { label: "Analytics", href: "/analytics", keywords: ["分析", "analytics"] },
-  { label: "NOTE AI", href: "/ai", keywords: ["ai", "チャット", "note ai"] },
   { label: "店舗管理", href: "/settings/stores", keywords: ["店舗管理", "店舗設定"] },
   { label: "設定", href: "/settings", keywords: ["設定", "settings"] },
   { label: "Google連携", href: "/settings/google", keywords: ["google", "スプレッドシート", "sheets"] },

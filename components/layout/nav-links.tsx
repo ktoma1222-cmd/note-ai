@@ -4,12 +4,14 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import clsx from "clsx";
 
+// AIチャット("/ai")は2026-09-20、ユーザー判断によりGemini連携ごと停止した。
+// コード自体(app/(app)/ai, components/ai, lib/ai, lib/actions/ai-chat.ts)は
+// 再開に備えて残し、ナビゲーション・検索からのみ外す。
 const ITEMS = [
   { href: "/", label: "Dashboard" },
   { href: "/pl/group", label: "PL" },
   { href: "/customers", label: "Customers" },
   { href: "/analytics", label: "Analytics" },
-  { href: "/ai", label: "NOTE AI" },
   { href: "/settings/stores", label: "店舗管理" },
   { href: "/settings", label: "設定" },
 ];
@@ -22,7 +24,7 @@ export function NavLinks({ variant = "sidebar" }: { variant?: "sidebar" | "mobil
       { href: "/", label: "Dashboard" },
       { href: "/pl/group", label: "PL" },
       { href: "/customers", label: "Customers" },
-      { href: "/ai", label: "AI" },
+      { href: "/analytics", label: "Analytics" },
       { href: "/settings", label: "More" },
     ];
     return (
