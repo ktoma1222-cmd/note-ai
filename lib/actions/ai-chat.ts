@@ -3,11 +3,11 @@
 import { getSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { runChat, type ChatMessage } from "@/lib/ai/chat";
-import { GeminiUnavailableError } from "@/lib/integrations/gemini";
+import { ClaudeUnavailableError } from "@/lib/integrations/claude";
 
 export type SendChatMessageResult = { ok: true; reply: string } | { ok: false; error: string };
 
-// メッセージ長・送信頻度の上限。無ければ誰でも無制限にGemini APIを呼び出せてしまうため
+// メッセージ長・送信頻度の上限。無ければ誰でも無制限にClaude APIを呼び出せてしまうため
 // (セキュリティ監査finding: ai-chat-no-rate-limit)。
 const MAX_MESSAGE_LENGTH = 4000;
 const RATE_LIMIT_WINDOW_MS = 5 * 60 * 1000;
@@ -35,10 +35,8 @@ async function consumeRateLimit(userId: string): Promise<boolean> {
   return true;
 }
 
-// 2026-09-20、ユーザー判断によりAIチャット(Gemini連携)を停止した。UI(ナビゲーション・/aiページ)
-// からは既に到達できないが、このアクション自体にも停止フラグを置き、Gemini APIには
-// 絶対に到達しないようにする(コード自体は再開に備えて残す)。
-const AI_CHAT_ENABLED = false;
+// 2026-09-20、Gemini連携を廃止しClaude(Anthropic API)に切り替えて再開した。
+const AI_CHAT_ENABLED = true;
 
 export async function sendChatMessageAction(
   history: ChatMessage[],
@@ -69,14 +67,14 @@ export async function sendChatMessageAction(
     const reply = await runChat(history, message.trim());
     return { ok: true, reply };
   } catch (err) {
-    if (err instanceof GeminiUnavailableError) {
-      console.error("Gemini API unavailable:", err.message);
+    if (err instanceof ClaudeUnavailableError) {
+      console.error("Claude API unavailable:", err.message);
       return {
         ok: false,
         error: "現在AIサービスが混み合っています。しばらくしてからもう一度お試しください。",
       };
     }
-    // Gemini APIの生のエラーレスポンス等、内部実装の詳細をそのままクライアントに返さない
+    // Claude APIの生のエラーレスポンス等、内部実装の詳細をそのままクライアントに返さない
     // (セキュリティ監査finding: gemini-raw-error-leak)。詳細はサーバー側ログにのみ残す。
     console.error("AI chat error:", err);
     return {
