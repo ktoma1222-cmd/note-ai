@@ -40,6 +40,9 @@ yarn-error.log*
 /prisma/dev.db
 /prisma/dev.db-journal
 
+# TableCheck CSV半自動取込用フォルダ(手動ダウンロードしたCSVを一時的に置く場所。個人情報を含むため非コミット)
+/tablecheck-inbox/
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts

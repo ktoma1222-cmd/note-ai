@@ -38,7 +38,9 @@ PIN(6〜8桁の数字)でログインし、以下3段階のロールで機能へ
 ## データの取り込み元
 
 - **PL(損益)**: 手入力、またはGoogleスプレッドシート連携で店舗ごとのシートから自動取込
-- **予約データ**: TableCheckの管理画面からエクスポートしたCSVを手動アップロード(TableCheck API自体は申請却下のため利用不可。2日に1回程度の頻度での手動取込を想定)
+- **予約データ**: TableCheckの管理画面からエクスポートしたCSVを取り込む(TableCheck API自体は申請却下のため利用不可)。取込は2段階:
+  - **手動アップロード**: 設定画面からCSVをアップロードし、プレビュー確認後に確定する方式(重複の疑いがある予約は人が新規/統合を選択)
+  - **半自動取込**(2026-09-23〜): ダウンロードしたCSVをサーバー上の`tablecheck-inbox/incoming/`フォルダに置くと、30分おきの定期ジョブ(`/api/cron/tablecheck-import`)が自動で取り込む。新規・更新・キャンセル・変更なしの予約は自動反映され、重複の疑いがある予約・読み取れなかった行だけは`needs-review/`に残り、設定画面から手動アップロードで再確認できる。CSVのダウンロード自体はTableCheck側が手動エクスポートしか提供していないため引き続き人力(詳細は[設定画面](../settings/tablecheck)を参照)
 - 過去には顧客データベース(Notion)との連携も行っていましたが、2026年9月以降はTableCheck CSVを正データソースとする方針に変更し、Notion同期は停止しています(過去データは参考情報として保持)
 
 ## 技術構成
@@ -48,7 +50,7 @@ PIN(6〜8桁の数字)でログインし、以下3段階のロールで機能へ
 - **UI**: React 19 / Tailwind CSS v4 / [Recharts](https://recharts.org)(グラフ)
 - **DB / ORM**: SQLite + [Prisma](https://www.prisma.io) ORM(将来的にPostgreSQL等への移行も想定した構成)
 - **認証**: PINログイン([bcryptjs](https://www.npmjs.com/package/bcryptjs)でハッシュ化) + [jose](https://github.com/panva/jose)によるJWTセッションCookie
-- **AI**: Google Gemini API(fetchベースの薄い自前クライアント、SDK依存なし)
+- **AI**: Anthropic Claude API(fetchベースの薄い自前クライアント、SDK依存なし)。アプリ内AIチャットに加え、手元のClaude Desktop/Claude Codeから直接PL・予約データに問い合わせられるMCPサーバー(`/api/mcp`、Streamable HTTP/JSON-RPC自前実装)も公開
 - **外部連携**: Google Sheets API(PL自動取込)、Google OAuth、Notion API(過去データ参照用)
 - 依存は最小限にする方針(SDKよりfetch直叩き、バリデーションは[zod](https://zod.dev)のみ、といった軽量な構成を意図的に選んでいます)
 
@@ -56,10 +58,11 @@ PIN(6〜8桁の数字)でログインし、以下3段階のロールで機能へ
 
 ```
 app/(app)/          画面(Dashboard, PL, Customers, Analytics, AI, 設定など)
-app/api/             Route Handler(Google OAuth, cronによるNotion同期用エンドポイント)
+app/api/             Route Handler(Google OAuth, cronによるNotion/TableCheck同期用エンドポイント, MCPサーバー)
 components/          画面ごとのUIコンポーネント
 lib/actions/         Server Actions(書き込み処理の本体、権限チェックもここで行う)
-lib/integrations/    外部サービス(Google Sheets, Notion, Gemini, TableCheck CSV)のクライアント
+lib/integrations/    外部サービス(Google Sheets, Notion, Claude, TableCheck CSV)のクライアント
+lib/sync/            定期実行される同期処理(Notion同期、TableCheck CSVフォルダ半自動取込)
 lib/*-queries.ts     読み取り集計ロジック
 prisma/schema.prisma データモデル定義
 proxy.ts             認証ミドルウェア(未ログイン時は/loginへリダイレクト)
@@ -88,8 +91,12 @@ proxy.ts             認証ミドルウェア(未ログイン時は/loginへリ�
 | `DATABASE_URL` | Prisma接続先(例: `file:./dev.db`) |
 | `AUTH_SECRET` | セッションJWTの署名鍵、および秘密情報の暗号化鍵の元になる値 |
 | `COOKIE_SECURE` | `"true"`でSecure Cookie(HTTPS配信時のみ)。既定は平文HTTP配信のため未設定でよい |
-| `CRON_SECRET` | 定期同期用エンドポイント(`/api/cron/notion-sync`)の認証用シークレット |
-| `GEMINI_API_KEY` / `GEMINI_MODEL` | AIチャット用(Gemini API) |
+| `CRON_SECRET` | 定期同期用エンドポイント(`/api/cron/notion-sync`, `/api/cron/tablecheck-import`)の認証用シークレット |
+| `ANTHROPIC_API_KEY` | AIチャット用(Claude API)。ワークスペースに紐づいていないキーの場合は`ANTHROPIC_WORKSPACE_ID`も必要 |
+| `CLAUDE_MODEL` | 省略時は`claude-sonnet-5`(任意) |
+| `ANTHROPIC_WORKSPACE_ID` | `ANTHROPIC_API_KEY`がワークスペース未紐付きの場合のみ必要(任意) |
+| `MCP_SECRET` | MCPサーバー(`/api/mcp`)の認証用シークレット(Bearerトークン) |
+| `TABLECHECK_INBOX_DIR` | TableCheck CSV半自動取込のフォルダパス。省略時はプロジェクト直下の`tablecheck-inbox/`(任意) |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` / `GOOGLE_REDIRECT_URI` | PLスプレッドシート連携用のGoogle OAuth |
 | `NOTION_API_KEY` / `NOTION_CUSTOMER_DB_ID` | 過去のNotion連携用(現在は新規同期は停止中) |
 

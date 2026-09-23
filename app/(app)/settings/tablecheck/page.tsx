@@ -5,6 +5,7 @@ import { getAllStores } from "@/lib/stores";
 import { TableCheckImportPanel } from "@/components/settings/TableCheckImportPanel";
 import { TableCheckStoreMappingRow } from "@/components/settings/TableCheckStoreMappingRow";
 import { ReservationImportHistory } from "@/components/settings/ReservationImportHistory";
+import { listNeedsReviewFiles, getTablecheckInboxDir } from "@/lib/sync/tablecheck-folder-import";
 
 // Notionへの書き戻し(PHASE 2)は実装済みだが、Notionワークスペースが第三者管理のため
 // 書き込み権限を得られず、運用しない方針になった(2026-09-17、ユーザー判断)。
@@ -16,12 +17,14 @@ export default async function TableCheckSettingsPage() {
   const session = await getSession();
   if (!session || session.role === "STAFF") return <AccessDenied />;
 
-  const [stores, mappings, logs, reservationCount] = await Promise.all([
+  const [stores, mappings, logs, reservationCount, needsReviewFiles] = await Promise.all([
     getAllStores(),
     prisma.tableCheckStoreMapping.findMany({ orderBy: { rawLabel: "asc" } }),
     prisma.reservationImportLog.findMany({ orderBy: { importedAt: "desc" }, take: 20 }),
     prisma.reservation.count(),
+    listNeedsReviewFiles(),
   ]);
+  const inboxDir = getTablecheckInboxDir();
 
   const unmappedCount = mappings.filter((m) => !m.storeId).length;
 
@@ -49,8 +52,34 @@ export default async function TableCheckSettingsPage() {
         </div>
       </div>
 
+      <div className="rounded-lg border border-border bg-surface-muted p-3 text-sm">
+        <p className="font-medium">自動取込(半自動化)</p>
+        <p className="mt-1 text-foreground-muted">
+          TableCheckからダウンロードしたCSVを、サーバー上の次のフォルダにそのまま置くと、定期ジョブが自動で取り込みます。
+          新規・更新・キャンセル・変更なしの予約は自動反映され、重複の疑いがある予約だけがレビュー待ちとして残ります。
+        </p>
+        <code className="mt-2 block break-all rounded bg-surface px-2 py-1 text-xs">{inboxDir}/incoming/</code>
+        {needsReviewFiles.length > 0 && (
+          <div className="mt-3">
+            <p className="font-medium text-amber-700 dark:text-amber-400">
+              レビュー待ちのファイル({needsReviewFiles.length}件)
+            </p>
+            <p className="mt-1 text-foreground-muted">
+              重複の疑いがある予約、または読み取れなかった行を含むため自動反映されませんでした。下記のCSV取込に再アップロードして内容を確認してください(反映済みの行は「変更なし」として表示されます)。
+            </p>
+            <ul className="mt-1 list-inside list-disc text-xs text-foreground-muted">
+              {needsReviewFiles.map((f) => (
+                <li key={f} className="break-all">
+                  {f}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </div>
+
       <div>
-        <p className="mb-2 text-sm font-medium text-foreground-muted">CSV取込</p>
+        <p className="mb-2 text-sm font-medium text-foreground-muted">CSV取込(手動)</p>
         <TableCheckImportPanel />
       </div>
 
