@@ -200,17 +200,27 @@ const STATUS_VALUE_CANDIDATES: { status: "CONFIRMED" | "REQUESTED" | "CANCELLED"
   },
 ];
 
-// 「当店をお知りになったきっかけ」の回答は複数選択可(カンマ区切り)だが、集計を単純にするため
-// 1つ目の回答のみを採用する(2026-09-23、ユーザー指示)。
-function firstAnswer(raw: string): string {
-  const first = raw.split(/[,、]/)[0]?.trim();
+// 「当店をお知りになったきっかけ」「国籍」とも複数回答されることがあるが、集計を単純にするため
+// 1つ目の回答のみを採用する(2026-09-23、ユーザー指示)。区切り文字は項目によって違う
+// (きっかけはカンマ区切りの選択式、国籍は"USA and Japan"/"Netherlands/Germany"のような自由記述の
+// 複数国併記もあるため区切り文字の種類が多い)。
+function firstSegment(raw: string, delimiter: RegExp): string {
+  const first = raw.split(delimiter)[0]?.trim();
   return first || raw.trim();
 }
 
+function buildAliasMap(aliases: { canonical: string; keys: string[] }[]): Map<string, string> {
+  return new Map(
+    aliases.flatMap(({ canonical, keys }) =>
+      keys.map((k) => [k.toLowerCase().replace(/[\s.-]/g, ""), canonical] as const)
+    )
+  );
+}
+
 // 自由記述のためTikTok/Tiktok/tiktok/Tik Tok、Instagram/insta/IG/インスタ等の表記揺れが多い。
-// 完全一致(大文字小文字・空白・ハイフンを無視)した場合のみ正規化する
+// 完全一致(大文字小文字・空白・ハイフン・ピリオドを無視)した場合のみ正規化する
 // (長文の自由記述を誤って短いラベルに丸め込まないよう、部分一致では判定しない、2026-09-23)。
-const DISCOVERY_SOURCE_ALIASES: { canonical: string; keys: string[] }[] = [
+const DISCOVERY_SOURCE_ALIAS_MAP = buildAliasMap([
   { canonical: "TikTok", keys: ["tiktok", "tik tok"] },
   {
     canonical: "Instagram",
@@ -224,17 +234,59 @@ const DISCOVERY_SOURCE_ALIASES: { canonical: string; keys: string[] }[] = [
     canonical: "紹介・オススメ",
     keys: ["friend", "friends", "a friend", "from a friend", "from friend", "from friends", "紹介・オススメ", "ご紹介", "知人の紹介"],
   },
-];
-const DISCOVERY_SOURCE_ALIAS_MAP = new Map(
-  DISCOVERY_SOURCE_ALIASES.flatMap(({ canonical, keys }) =>
-    keys.map((k) => [k.toLowerCase().replace(/[\s-]/g, ""), canonical] as const)
-  )
-);
+]);
 
 function normalizeDiscoverySource(raw: string): string {
-  const answer = firstAnswer(raw);
-  const key = answer.toLowerCase().replace(/[\s-]/g, "");
+  const answer = firstSegment(raw, /[,、]/);
+  const key = answer.toLowerCase().replace(/[\s.-]/g, "");
   return DISCOVERY_SOURCE_ALIAS_MAP.get(key) ?? answer;
+}
+
+// 国籍は英語表記の揺れ(USA/US/U.S.A./United States/american等)に加え、
+// "USA and Japan"/"Netherlands/Germany"のような複数国併記もあるため区切り文字を広めに扱う。
+const COUNTRY_ALIAS_MAP = buildAliasMap([
+  { canonical: "United States", keys: ["usa", "us", "u.s.a", "u.s", "united states", "united states of america", "the united states", "american", "america"] },
+  { canonical: "United Kingdom", keys: ["uk", "u.k", "united kingdom", "great britain", "britain", "british"] },
+  { canonical: "Japan", keys: ["japan", "japanese", "日本", "にほん"] },
+  { canonical: "South Korea", keys: ["korea", "south korea", "korean", "한국", "대한민국"] },
+  { canonical: "China", keys: ["china", "chinese", "中国", "中國"] },
+  { canonical: "Taiwan", keys: ["taiwan", "taiwanese", "台湾", "台灣"] },
+  { canonical: "Hong Kong", keys: ["hong kong", "hongkong", "hk", "香港"] },
+  { canonical: "Canada", keys: ["canada", "canadian"] },
+  { canonical: "Australia", keys: ["australia", "australian"] },
+  { canonical: "Germany", keys: ["germany", "german", "deutschland", "deutsch"] },
+  { canonical: "France", keys: ["france", "french"] },
+  { canonical: "Italy", keys: ["italy", "italia", "italian", "italiana"] },
+  { canonical: "Spain", keys: ["spain", "españa", "espana", "spanish", "スペイン"] },
+  { canonical: "Switzerland", keys: ["switzerland", "suisse", "swiss"] },
+  { canonical: "Netherlands", keys: ["netherlands", "the netherlands", "holland", "dutch"] },
+  { canonical: "Malaysia", keys: ["malaysia", "malaysian"] },
+  { canonical: "Philippines", keys: ["philippines", "philippine", "filipino"] },
+  { canonical: "Israel", keys: ["israel", "israeli"] },
+  { canonical: "Brazil", keys: ["brazil", "brasil", "brasileiro", "brazilian"] },
+  { canonical: "India", keys: ["india", "indian"] },
+  { canonical: "United Arab Emirates", keys: ["uae", "united arab emirates"] },
+  { canonical: "Macau", keys: ["macau", "macao"] },
+  { canonical: "Mexico", keys: ["mexico", "mexican"] },
+  { canonical: "Singapore", keys: ["singapore", "singaporean"] },
+  { canonical: "Belgium", keys: ["belgium", "belgian"] },
+  { canonical: "Sweden", keys: ["sweden", "swedish"] },
+  { canonical: "Norway", keys: ["norway", "norwegian"] },
+  { canonical: "Denmark", keys: ["denmark", "danish"] },
+  { canonical: "Austria", keys: ["austria", "austrian"] },
+  { canonical: "Russia", keys: ["russia", "russian"] },
+  { canonical: "Turkey", keys: ["turkey", "turkish"] },
+  { canonical: "Portugal", keys: ["portugal", "portuguese"] },
+  { canonical: "New Zealand", keys: ["new zealand", "nz"] },
+  { canonical: "South Africa", keys: ["south africa"] },
+  { canonical: "Thailand", keys: ["thailand", "thai"] },
+  { canonical: "Indonesia", keys: ["indonesia", "indonesian"] },
+]);
+
+function normalizeCountry(raw: string): string {
+  const answer = firstSegment(raw, /[,、/&]|\band\b/i);
+  const key = answer.toLowerCase().replace(/[\s.-]/g, "");
+  return COUNTRY_ALIAS_MAP.get(key) ?? answer;
 }
 
 /**
@@ -261,7 +313,8 @@ export function extractFromNotes(notes: string | null): {
   let discoverySource: string | null = null;
   for (const line of notes.split(/\r?\n/)) {
     if (country === null && /country of cit|国籍/i.test(line)) {
-      country = extractAnswer(line);
+      const answer = extractAnswer(line);
+      country = answer ? normalizeCountry(answer) : null;
     }
     // 「当店をお知りになったきっかけをお知らせください」という予約フォームの自由回答質問
     // (お客様自身が回答した来店経路。TableCheck側がシステム的に分類する「きっかけ」列とは別物で、
