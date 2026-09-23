@@ -283,9 +283,14 @@ const COUNTRY_ALIAS_MAP = buildAliasMap([
   { canonical: "Indonesia", keys: ["indonesia", "indonesian"] },
 ]);
 
-function normalizeCountry(raw: string): string {
+// 「国籍」の質問に「はい」等、国名ではない誤回答が稀に紛れ込む(2026-09-23、ユーザー確認)。
+// 国名として扱えないと明確なものだけを除外する(あいまいな自由記述まで弾くと過剰除外になるため)。
+const INVALID_COUNTRY_ANSWERS = new Set(["はい", "いいえ", "yes", "no", "na", "n/a"]);
+
+function normalizeCountry(raw: string): string | null {
   const answer = firstSegment(raw, /[,、/&]|\band\b/i);
   const key = answer.toLowerCase().replace(/[\s.-]/g, "");
+  if (INVALID_COUNTRY_ANSWERS.has(key)) return null;
   return COUNTRY_ALIAS_MAP.get(key) ?? answer;
 }
 
