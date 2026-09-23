@@ -200,6 +200,43 @@ const STATUS_VALUE_CANDIDATES: { status: "CONFIRMED" | "REQUESTED" | "CANCELLED"
   },
 ];
 
+// 「当店をお知りになったきっかけ」の回答は複数選択可(カンマ区切り)だが、集計を単純にするため
+// 1つ目の回答のみを採用する(2026-09-23、ユーザー指示)。
+function firstAnswer(raw: string): string {
+  const first = raw.split(/[,、]/)[0]?.trim();
+  return first || raw.trim();
+}
+
+// 自由記述のためTikTok/Tiktok/tiktok/Tik Tok、Instagram/insta/IG/インスタ等の表記揺れが多い。
+// 完全一致(大文字小文字・空白・ハイフンを無視)した場合のみ正規化する
+// (長文の自由記述を誤って短いラベルに丸め込まないよう、部分一致では判定しない、2026-09-23)。
+const DISCOVERY_SOURCE_ALIASES: { canonical: string; keys: string[] }[] = [
+  { canonical: "TikTok", keys: ["tiktok", "tik tok"] },
+  {
+    canonical: "Instagram",
+    keys: ["instagram", "instagramm", "instegram", "instgram", "insta", "ig", "インスタ", "インスタグラム"],
+  },
+  { canonical: "Social media", keys: ["social media", "sns"] },
+  { canonical: "Google", keys: ["google", "google search", "google map", "google maps"] },
+  { canonical: "食べログ", keys: ["食べログ", "tabelog", "tablelog"] },
+  { canonical: "YouTube", keys: ["youtube", "ユーチューブ"] },
+  {
+    canonical: "紹介・オススメ",
+    keys: ["friend", "friends", "a friend", "from a friend", "from friend", "from friends", "紹介・オススメ", "ご紹介", "知人の紹介"],
+  },
+];
+const DISCOVERY_SOURCE_ALIAS_MAP = new Map(
+  DISCOVERY_SOURCE_ALIASES.flatMap(({ canonical, keys }) =>
+    keys.map((k) => [k.toLowerCase().replace(/[\s-]/g, ""), canonical] as const)
+  )
+);
+
+function normalizeDiscoverySource(raw: string): string {
+  const answer = firstAnswer(raw);
+  const key = answer.toLowerCase().replace(/[\s-]/g, "");
+  return DISCOVERY_SOURCE_ALIAS_MAP.get(key) ?? answer;
+}
+
 /**
  * 「予約メモ」内の自由記述(Q&A形式)から国籍・リピート区分・来店のきっかけを抽出する。
  * TableCheck実データでは独立列ではなく「質問N: Country of cit… 回答N: United States」
@@ -230,7 +267,8 @@ export function extractFromNotes(notes: string | null): {
     // (お客様自身が回答した来店経路。TableCheck側がシステム的に分類する「きっかけ」列とは別物で、
     // 現場ではこちらの方が実態に近いとされる。複数選択可のためカンマ区切りの複数値が入りうる)。
     if (discoverySource === null && /当店をお知/.test(line)) {
-      discoverySource = extractAnswer(line);
+      const answer = extractAnswer(line);
+      discoverySource = answer ? normalizeDiscoverySource(answer) : null;
     }
   }
 
