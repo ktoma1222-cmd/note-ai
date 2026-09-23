@@ -81,8 +81,10 @@ export function parseCsv(text: string): string[][] {
 // TableCheck実CSV(2026-09-17に実データで検証)では「予約ID」=6桁の英数字コード、
 // 「人数」は年齢区分別(人数:大人/シニア/子供/幼児)に4列へ分かれている、
 // 開始日時は「開始日」+「開始時刻」の分割列(または「予約時間」の結合列)、
-// 「きっかけ」列が予約経路(reservationSource)に相当、国籍・リピート情報は
-// 独立列ではなく「予約メモ」内の自由記述(Q&A形式)に埋め込まれている、等の実態が判明済み。
+// 「きっかけ」列はTableCheck側のシステム分類でしかなく実態と乖離するため、予約経路
+// (reservationSource)は予約メモ内のお客様自身の回答(「当店をお知りになったきっかけ」Q&A)を
+// 優先し、「きっかけ」列は該当質問が無い古いCSVのみのフォールバックとする(2026-09-23判明)。
+// 国籍・リピート情報も同様に独立列ではなく「予約メモ」内の自由記述(Q&A形式)に埋め込まれている。
 const HEADER_CANDIDATES = {
   externalReservationId: [
     "reservation_id",
@@ -199,22 +201,36 @@ const STATUS_VALUE_CANDIDATES: { status: "CONFIRMED" | "REQUESTED" | "CANCELLED"
 ];
 
 /**
- * 「予約メモ」内の自由記述(Q&A形式)から国籍・リピート区分を抽出する。
+ * 「予約メモ」内の自由記述(Q&A形式)から国籍・リピート区分・来店のきっかけを抽出する。
  * TableCheck実データでは独立列ではなく「質問N: Country of cit… 回答N: United States」
- * 「ご利用回数: 初来店」のような形式でメモ欄に埋め込まれているため、正規表現で拾う。
+ * 「ご利用回数: 初来店」「質問N: 差し支えなければ、当店をお知… 回答N: Google, 紹介・オススメ」
+ * のような形式でメモ欄に埋め込まれているため、正規表現で拾う(2026-09-23、実CSVで確認。
+ * 質問文はCSV上で「…」により途中で切り詰められているため、生き残る先頭部分のみで照合する)。
  * 抽出できるのはあくまで補助的な情報であり、書式が変われば拾えなくなる点に注意。
  */
-export function extractFromNotes(notes: string | null): { country: string | null; isRepeat: boolean | null } {
-  if (!notes) return { country: null, isRepeat: null };
+export function extractFromNotes(notes: string | null): {
+  country: string | null;
+  isRepeat: boolean | null;
+  discoverySource: string | null;
+} {
+  if (!notes) return { country: null, isRepeat: null, discoverySource: null };
+
+  function extractAnswer(line: string): string | null {
+    const m = line.match(/回答\s*\d*[:：]\s*(.+)$/);
+    return m ? m[1].trim() : null;
+  }
 
   let country: string | null = null;
+  let discoverySource: string | null = null;
   for (const line of notes.split(/\r?\n/)) {
-    if (/country of cit|国籍/i.test(line)) {
-      const m = line.match(/回答\s*\d*[:：]\s*(.+)$/);
-      if (m) {
-        country = m[1].trim();
-        break;
-      }
+    if (country === null && /country of cit|国籍/i.test(line)) {
+      country = extractAnswer(line);
+    }
+    // 「当店をお知りになったきっかけをお知らせください」という予約フォームの自由回答質問
+    // (お客様自身が回答した来店経路。TableCheck側がシステム的に分類する「きっかけ」列とは別物で、
+    // 現場ではこちらの方が実態に近いとされる。複数選択可のためカンマ区切りの複数値が入りうる)。
+    if (discoverySource === null && /当店をお知/.test(line)) {
+      discoverySource = extractAnswer(line);
     }
   }
 
@@ -222,7 +238,7 @@ export function extractFromNotes(notes: string | null): { country: string | null
   if (/ご利用回数\s*[:：]\s*リピート/.test(notes)) isRepeat = true;
   else if (/ご利用回数\s*[:：]\s*初来店/.test(notes)) isRepeat = false;
 
-  return { country, isRepeat };
+  return { country, isRepeat, discoverySource };
 }
 
 export function mapCsvStatus(raw: string | null): "CONFIRMED" | "REQUESTED" | "CANCELLED" | "UNKNOWN" {
@@ -360,10 +376,13 @@ export function parseTableCheckCsv(text: string): CsvParseResult {
       visitTime: extractTime(visitTimeRaw),
       partySize,
       status: mapCsvStatus(get(row, mapping.status)),
-      country: get(row, mapping.country) ?? fromNotes.country,
+      // 国籍・予約経路とも、お客様自身の回答(予約メモ内のQ&A)がある場合はそちらを優先する。
+      // 「きっかけ」等の独立列はTableCheck側のシステム分類でしかなく、実態と乖離することが
+      // 確認された(2026-09-23、ユーザー確認)ため、独立列は該当するメモが無い場合のみのフォールバックとする。
+      country: fromNotes.country ?? get(row, mapping.country),
       purpose: get(row, mapping.purpose),
       isRepeat: isRepeatRaw ? /リピ|repeat|returning/i.test(isRepeatRaw) : fromNotes.isRepeat,
-      reservationSource: get(row, mapping.reservationSource),
+      reservationSource: fromNotes.discoverySource ?? get(row, mapping.reservationSource),
       estimatedAmount: (() => {
         const raw = get(row, mapping.estimatedAmount);
         if (!raw) return null;
