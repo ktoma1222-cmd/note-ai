@@ -294,6 +294,55 @@ function normalizeCountry(raw: string): string | null {
   return COUNTRY_ALIAS_MAP.get(key) ?? answer;
 }
 
+// Analytics「国籍/地域構成」の地域分類は元々Notionのformulaプロパティ(「地域」)が出す
+// その他/アジア/オセアニア/ヨーロッパ/中南米/中東/北米/日本の8分類に合わせている。
+// TableCheck側(正規化済みcountry)もこの分類にまとめてAnalyticsで一緒に表示できるようにする
+// (2026-09-25、ユーザー依頼で国籍データの統合を再開)。normalizeCountry()の正規化名しか
+// キーに持たないため、正規化されなかった自由記述はその他に入る。
+const COUNTRY_TO_REGION_MAP = new Map<string, string>([
+  ["Japan", "日本"],
+  ["South Korea", "アジア"],
+  ["China", "アジア"],
+  ["Taiwan", "アジア"],
+  ["Hong Kong", "アジア"],
+  ["Macau", "アジア"],
+  ["Malaysia", "アジア"],
+  ["Philippines", "アジア"],
+  ["Singapore", "アジア"],
+  ["Thailand", "アジア"],
+  ["Indonesia", "アジア"],
+  ["India", "アジア"],
+  ["Australia", "オセアニア"],
+  ["New Zealand", "オセアニア"],
+  ["United Kingdom", "ヨーロッパ"],
+  ["Germany", "ヨーロッパ"],
+  ["France", "ヨーロッパ"],
+  ["Italy", "ヨーロッパ"],
+  ["Spain", "ヨーロッパ"],
+  ["Switzerland", "ヨーロッパ"],
+  ["Netherlands", "ヨーロッパ"],
+  ["Belgium", "ヨーロッパ"],
+  ["Sweden", "ヨーロッパ"],
+  ["Norway", "ヨーロッパ"],
+  ["Denmark", "ヨーロッパ"],
+  ["Austria", "ヨーロッパ"],
+  ["Russia", "ヨーロッパ"],
+  ["Portugal", "ヨーロッパ"],
+  ["Brazil", "中南米"],
+  ["Mexico", "中南米"],
+  ["Israel", "中東"],
+  ["United Arab Emirates", "中東"],
+  ["Turkey", "中東"],
+  ["United States", "北米"],
+  ["Canada", "北米"],
+  ["South Africa", "その他"],
+]);
+
+export function regionForCountry(country: string | null): string {
+  if (!country) return "不明";
+  return COUNTRY_TO_REGION_MAP.get(country) ?? "その他";
+}
+
 /**
  * 「予約メモ」内の自由記述(Q&A形式)から国籍・リピート区分・来店のきっかけを抽出する。
  * TableCheck実データでは独立列ではなく「質問N: Country of cit… 回答N: United States」

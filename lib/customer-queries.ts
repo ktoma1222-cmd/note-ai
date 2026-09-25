@@ -51,18 +51,6 @@ function toBreakdown(
     .sort((a, b) => b.count - a.count);
 }
 
-export async function getRegionBreakdown(where: Prisma.VisitWhereInput): Promise<BreakdownItem[]> {
-  const grouped = await prisma.visit.groupBy({
-    by: ["region"],
-    where,
-    _count: { _all: true },
-  });
-  return toBreakdown(
-    grouped.map((g) => ({ region: g.region, count: g._count._all })),
-    "region"
-  );
-}
-
 export async function getPurposeCategoryBreakdown(
   where: Prisma.VisitWhereInput
 ): Promise<BreakdownItem[]> {

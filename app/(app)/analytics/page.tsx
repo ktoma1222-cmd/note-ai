@@ -1,6 +1,7 @@
 import { resolvePeriodSelection } from "@/lib/period";
-import { resolveVisitStoreFilter, buildVisitWhere, countVisits, getRegionBreakdown } from "@/lib/customer-queries";
+import { resolveVisitStoreFilter, buildVisitWhere, countVisits } from "@/lib/customer-queries";
 import {
+  getUnifiedRegionBreakdown,
   getUnifiedPurposeBreakdown,
   getUnifiedChannelBreakdown,
   getUnifiedNewRepeatBreakdown,
@@ -21,7 +22,7 @@ export default async function AnalyticsPage({
 
   const [total, region, purpose, channel, newRepeat] = await Promise.all([
     countVisits(where),
-    getRegionBreakdown(where),
+    getUnifiedRegionBreakdown(storeParam, year, month),
     getUnifiedPurposeBreakdown(storeParam, year, month),
     getUnifiedChannelBreakdown(storeParam, year, month),
     getUnifiedNewRepeatBreakdown(storeParam, year, month),
@@ -35,8 +36,8 @@ export default async function AnalyticsPage({
       </div>
 
       <p className="text-xs text-foreground-muted">
-        利用用途・予約経路・新規/リピーターは、店舗・年月ごとにTableCheck取込データがあればそちらを優先し、無い場合はNotionのデータを使用しています(二重計上を避けるため)。
-        国籍/地域構成のみ、TableCheck側の国籍データが自由記述で粒度が異なるためNotionのデータのみを使用しています。
+        国籍/地域構成・利用用途・予約経路・新規/リピーターは、店舗・年月ごとにTableCheck取込データがあればそちらを優先し、無い場合はNotionのデータを使用しています(二重計上を避けるため)。
+        予約経路は件数の少ない項目を「その他」にまとめて表示しています。
       </p>
 
       {total === 0 && purpose.length === 0 ? (
@@ -45,7 +46,7 @@ export default async function AnalyticsPage({
         </p>
       ) : (
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-          <DonutChart title="国籍/地域構成(Notion)" data={region} />
+          <DonutChart title="国籍/地域構成" data={region} />
           <DonutChart title="新規 / リピーター" data={newRepeat} />
           <BarBreakdownChart title="利用用途" data={purpose} />
           <BarBreakdownChart title="予約経路" data={channel} color="#1f7a4d" />

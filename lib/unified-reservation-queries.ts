@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { getGroupIncludedStores } from "@/lib/stores";
 import { buildVisitWhere, getReservationSummary, type ReservationSummary } from "@/lib/customer-queries";
 import type { ReservationTrendPoint, BreakdownItem } from "@/lib/customer-queries";
+import { regionForCountry } from "@/lib/integrations/tablecheck-csv";
 
 // Customers画面上部の「予約組数/人数」KPIカード・前年比較グラフを、Notion(Visit)だけでなく
 // TableCheck CSV取込(Reservation)のデータも反映させるための統合クエリ。
@@ -150,11 +151,12 @@ export async function getUnifiedReservationYoyTrend(
   return points;
 }
 
-// --- Analyticsページ向け: 用途/予約経路/新規リピーターの内訳を「店舗×年月」単位で統合する ---
-// 国籍/地域はNotion側がformula(AI/ルールベース)で整理済みのクリーンな地域分類なのに対し、
-// TableCheck側のcountryは予約メモからの正規表現抽出による表記ゆれの多い自由記述データで
-// 粒度・品質が大きく異なるため、統合するとグラフが破綻する。そのため意図的に統合対象外とし、
-// 従来通りNotion(Visit)のregionのみを使い続ける([[project-tablecheck-csv-import]]参照)。
+// --- Analyticsページ向け: 国籍/地域・用途/予約経路/新規リピーターの内訳を「店舗×年月」単位で統合する ---
+// 国籍/地域は元々、TableCheck側のcountryが予約メモからの正規表現抽出による表記ゆれの多い
+// 自由記述データだったため統合対象外(Notionのformula分類のみ使用)としていたが、
+// 2026-09-23にcountryの表記揺れ正規化(normalizeCountry)を行ったため、2026-09-25に統合を再開した。
+// countryをregionForCountry()で「日本/アジア/オセアニア/ヨーロッパ/中南米/中東/北米/その他」の
+// Notion側と同じ8分類にまとめてから他の指標と同じ優先ルールで統合する。
 
 function toBreakdownItems(grouped: { count: number; label: string | null }[]): BreakdownItem[] {
   return grouped
@@ -177,6 +179,36 @@ function mergeBreakdowns(lists: BreakdownItem[][]): BreakdownItem[] {
 async function hasReservationDataForStore(storeId: string, year: number, month: number | null): Promise<boolean> {
   const count = await prisma.reservation.count({ where: { storeId, visitDate: buildDateRange(year, month) } });
   return count > 0;
+}
+
+async function getVisitRegionBreakdownForStore(
+  storeId: string,
+  year: number,
+  month: number | null
+): Promise<BreakdownItem[]> {
+  const where = buildVisitWhere({ storeId }, year, month);
+  const grouped = await prisma.visit.groupBy({ by: ["region"], where, _count: { _all: true } });
+  return toBreakdownItems(grouped.map((g) => ({ label: g.region, count: g._count._all })));
+}
+
+async function getReservationRegionBreakdownForStore(
+  storeId: string,
+  year: number,
+  month: number | null
+): Promise<BreakdownItem[]> {
+  const grouped = await prisma.reservation.groupBy({
+    by: ["country"],
+    where: { storeId, visitDate: buildDateRange(year, month) },
+    _count: { _all: true },
+  });
+  const regionCounts = new Map<string, number>();
+  for (const g of grouped) {
+    const region = regionForCountry(g.country);
+    regionCounts.set(region, (regionCounts.get(region) ?? 0) + g._count._all);
+  }
+  return Array.from(regionCounts.entries())
+    .map(([label, count]) => ({ label, count }))
+    .sort((a, b) => b.count - a.count);
 }
 
 async function getVisitPurposeBreakdownForStore(
@@ -272,6 +304,20 @@ async function getUnifiedBreakdown(
   return mergeBreakdowns(perStore);
 }
 
+export async function getUnifiedRegionBreakdown(
+  storeParam: string,
+  year: number,
+  month: number | null
+): Promise<BreakdownItem[]> {
+  return getUnifiedBreakdown(
+    storeParam,
+    year,
+    month,
+    getVisitRegionBreakdownForStore,
+    getReservationRegionBreakdownForStore
+  );
+}
+
 export async function getUnifiedPurposeBreakdown(
   storeParam: string,
   year: number,
@@ -286,18 +332,37 @@ export async function getUnifiedPurposeBreakdown(
   );
 }
 
+// TableCheck側の予約経路は自由記述(お客様自身の回答)のため、正規化しきれない一度きりの
+// 表現がロングテールで大量に残る。グラフが読めなくなるため上位件数のみ表示し、残りは
+// 「その他」に集約する(2026-09-25、ユーザー依頼)。
+const CHANNEL_BREAKDOWN_TOP_N = 10;
+
+function capBreakdown(items: BreakdownItem[], topN: number): BreakdownItem[] {
+  if (items.length <= topN) return items;
+  const sorted = [...items].sort((a, b) => b.count - a.count);
+  const top = sorted.slice(0, topN);
+  const restCount = sorted.slice(topN).reduce((sum, item) => sum + item.count, 0);
+  const existingOther = top.find((item) => item.label === "その他");
+  if (existingOther) {
+    existingOther.count += restCount;
+    return top.sort((a, b) => b.count - a.count);
+  }
+  return [...top, { label: "その他", count: restCount }].sort((a, b) => b.count - a.count);
+}
+
 export async function getUnifiedChannelBreakdown(
   storeParam: string,
   year: number,
   month: number | null
 ): Promise<BreakdownItem[]> {
-  return getUnifiedBreakdown(
+  const breakdown = await getUnifiedBreakdown(
     storeParam,
     year,
     month,
     getVisitChannelBreakdownForStore,
     getReservationChannelBreakdownForStore
   );
+  return capBreakdown(breakdown, CHANNEL_BREAKDOWN_TOP_N);
 }
 
 export async function getUnifiedNewRepeatBreakdown(

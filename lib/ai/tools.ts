@@ -10,7 +10,6 @@ import {
   getStoreYearlyComparisonForPeriod,
   getBreakEvenForStoreOrGroup,
 } from "@/lib/pl-queries";
-import { resolveVisitStoreFilter, buildVisitWhere, getRegionBreakdown } from "@/lib/customer-queries";
 import {
   resolveReservationStoreFilter,
   buildReservationWhere,
@@ -20,6 +19,7 @@ import {
 } from "@/lib/reservation-queries";
 import {
   getUnifiedReservationSummary,
+  getUnifiedRegionBreakdown,
   getUnifiedPurposeBreakdown,
   getUnifiedChannelBreakdown,
   getUnifiedNewRepeatBreakdown,
@@ -124,7 +124,7 @@ export const AI_TOOL_DECLARATIONS: ClaudeToolDeclaration[] = [
     name: "get_customer_breakdown",
     description:
       "指定した店舗(またはグループ全体)・指定期間の予約/来店データについて、内訳(国籍/地域、利用用途、予約経路、新規/リピーターのいずれか)の集計件数を取得する。個人の氏名・電話番号などは含まれない。" +
-      "国籍/地域以外(利用用途・予約経路・新規/リピーター)は、店舗・年月ごとにTableCheck取込データがあればそちらを優先する統合済みの集計(Analytics画面と同じ)。国籍/地域のみNotion連携のデータのみを使う(TableCheck側は自由記述で粒度が異なるため)。",
+      "いずれの軸も、店舗・年月ごとにTableCheck取込データがあればそちらを優先する統合済みの集計(Analytics画面と同じ)。予約経路は件数の少ない項目を「その他」にまとめている。",
     input_schema: {
       type: "object",
       properties: {
@@ -316,12 +316,9 @@ export async function executeAiTool(
 
       let breakdown: { label: string; count: number }[];
       switch (breakdownType) {
-        case "region": {
-          const storeFilter = await resolveVisitStoreFilter(storeParam);
-          const where = buildVisitWhere(storeFilter, year, month);
-          breakdown = await getRegionBreakdown(where);
+        case "region":
+          breakdown = await getUnifiedRegionBreakdown(storeParam, year, month);
           break;
-        }
         case "purpose":
           breakdown = await getUnifiedPurposeBreakdown(storeParam, year, month);
           break;
