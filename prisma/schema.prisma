@@ -1,13 +1,12 @@
 // NOTE AI - Prisma schema
-// ローカル開発は SQLite。将来 PostgreSQL(Supabase) へ移行する際は
-// datasource の provider/url を切り替えて `prisma migrate` を再実行するだけでよい設計。
+// 2026-10-07にSQLiteからPostgreSQL(Neon)へ移行済み(Netlify公開に伴うデータ層変更)。
 
 generator client {
   provider = "prisma-client-js"
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 

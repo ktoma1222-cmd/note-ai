@@ -4,11 +4,12 @@
   "private": true,
   "scripts": {
     "dev": "next dev -H 100.86.90.66",
-    "build": "next build",
+    "build": "prisma generate && prisma migrate deploy && next build",
     "start": "next start -H 100.86.90.66",
     "lint": "eslint",
     "db:seed": "tsx prisma/seed.ts",
-    "db:studio": "prisma studio"
+    "db:studio": "prisma studio",
+    "tablecheck:import": "tsx --conditions=react-server scripts/run-tablecheck-import.ts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"
@@ -24,6 +25,7 @@
     "react": "19.2.8",
     "react-dom": "19.2.8",
     "recharts": "^3.10.1",
+    "server-only": "^0.0.1",
     "zod": "^4.6.4"
   },
   "devDependencies": {

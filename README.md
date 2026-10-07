@@ -40,7 +40,7 @@ PIN(6〜8桁の数字)でログインし、以下3段階のロールで機能へ
 - **PL(損益)**: 手入力、またはGoogleスプレッドシート連携で店舗ごとのシートから自動取込
 - **予約データ**: TableCheckの管理画面からエクスポートしたCSVを取り込む(TableCheck API自体は申請却下のため利用不可)。取込は2段階:
   - **手動アップロード**: 設定画面からCSVをアップロードし、プレビュー確認後に確定する方式(重複の疑いがある予約は人が新規/統合を選択)
-  - **半自動取込**(2026-09-23〜): ダウンロードしたCSVをサーバー上の`tablecheck-inbox/incoming/`フォルダに置くと、30分おきの定期ジョブ(`/api/cron/tablecheck-import`)が自動で取り込む。新規・更新・キャンセル・変更なしの予約は自動反映され、重複の疑いがある予約・読み取れなかった行だけは`needs-review/`に残り、設定画面から手動アップロードで再確認できる。CSVのダウンロード自体はTableCheck側が手動エクスポートしか提供していないため引き続き人力(詳細は[設定画面](../settings/tablecheck)を参照)
+  - **半自動取込**(2026-09-23〜): ダウンロードしたCSVを運用者のMac上の`tablecheck-inbox/incoming/`フォルダに置くと、30分おきのlaunchdジョブ(`npm run tablecheck:import`、`scripts/run-tablecheck-import.ts`)が自動で取り込む。新規・更新・キャンセル・変更なしの予約は自動反映され、重複の疑いがある予約・読み取れなかった行だけは`needs-review/`に残り、設定画面から手動アップロードで再確認できる。ローカルファイルシステムに依存するため公開アプリ(Netlify)側では動かせず、Mac上で常時稼働させる前提(2026-10-07、Netlify移行に伴いRoute Handler版からスタンドアロンスクリプト版に変更)。CSVのダウンロード自体はTableCheck側が手動エクスポートしか提供していないため引き続き人力(詳細は[設定画面](../settings/tablecheck)を参照)
 - 過去には顧客データベース(Notion)との連携も行っていましたが、2026年9月以降はTableCheck CSVを正データソースとする方針に変更し、Notion同期は停止しています(過去データは参考情報として保持)
 
 ## 技術構成
@@ -48,8 +48,8 @@ PIN(6〜8桁の数字)でログインし、以下3段階のロールで機能へ
 - **フレームワーク**: [Next.js](https://nextjs.org) 16(App Router, Turbopack)
 - **言語**: TypeScript
 - **UI**: React 19 / Tailwind CSS v4 / [Recharts](https://recharts.org)(グラフ)
-- **DB / ORM**: SQLite + [Prisma](https://www.prisma.io) ORM(将来的にPostgreSQL等への移行も想定した構成)
-- **認証**: PINログイン([bcryptjs](https://www.npmjs.com/package/bcryptjs)でハッシュ化) + [jose](https://github.com/panva/jose)によるJWTセッションCookie
+- **DB / ORM**: PostgreSQL([Neon](https://neon.com)、無料枠) + [Prisma](https://www.prisma.io) ORM(2026-10-07にSQLiteから移行)
+- **認証**: HTTP Basic認証(一般公開に伴い追加、後述) → PINログイン([bcryptjs](https://www.npmjs.com/package/bcryptjs)でハッシュ化) + [jose](https://github.com/panva/jose)によるJWTセッションCookie、の二段構え
 - **AI**: Anthropic Claude API(fetchベースの薄い自前クライアント、SDK依存なし)。アプリ内AIチャットに加え、手元のClaude Desktop/Claude Codeから直接PL・予約データに問い合わせられるMCPサーバー(`/api/mcp`、Streamable HTTP/JSON-RPC自前実装)も公開
 - **外部連携**: Google Sheets API(PL自動取込)、Google OAuth、Notion API(過去データ参照用)
 - 依存は最小限にする方針(SDKよりfetch直叩き、バリデーションは[zod](https://zod.dev)のみ、といった軽量な構成を意図的に選んでいます)
@@ -65,7 +65,8 @@ lib/integrations/    外部サービス(Google Sheets, Notion, Claude, TableChec
 lib/sync/            定期実行される同期処理(Notion同期、TableCheck CSVフォルダ半自動取込)
 lib/*-queries.ts     読み取り集計ロジック
 prisma/schema.prisma データモデル定義
-proxy.ts             認証ミドルウェア(未ログイン時は/loginへリダイレクト)
+proxy.ts             認証ミドルウェア(Basic認証 → 未ログイン時は/loginへリダイレクト)
+scripts/             Mac上のlaunchdから直接実行するスタンドアロンスクリプト(TableCheck CSV取込等)
 .claude/skills/      Claude Codeのセキュリティ監査スキル(後述)
 ```
 
@@ -88,10 +89,11 @@ proxy.ts             認証ミドルウェア(未ログイン時は/loginへリ�
 
 | 変数名 | 用途 |
 |---|---|
-| `DATABASE_URL` | Prisma接続先(例: `file:./dev.db`) |
-| `AUTH_SECRET` | セッションJWTの署名鍵、および秘密情報の暗号化鍵の元になる値 |
-| `COOKIE_SECURE` | `"true"`でSecure Cookie(HTTPS配信時のみ)。既定は平文HTTP配信のため未設定でよい |
-| `CRON_SECRET` | 定期同期用エンドポイント(`/api/cron/notion-sync`, `/api/cron/tablecheck-import`)の認証用シークレット |
+| `DATABASE_URL` | Prisma接続先(Postgres/Neonの接続文字列) |
+| `AUTH_SECRET` | セッションJWTの署名鍵、および秘密情報の暗号化鍵の元になる値。**変更するとGoogleConnection等の既存の暗号化データが復号できなくなるため、本番環境では値を変えないこと** |
+| `COOKIE_SECURE` | `"true"`推奨(Netlifyは常時HTTPS配信のため) |
+| `BASIC_AUTH_USER` / `BASIC_AUTH_PASS` | 一般公開に伴い追加したHTTP Basic認証(PINログインの手前のもう一段の壁)。両方設定時のみ有効、未設定ならローカル開発に影響なし |
+| `CRON_SECRET` | 定期同期用エンドポイント(`/api/cron/notion-sync`, `/api/cron/tablecheck-import`。後者は現在未使用、下記参照)の認証用シークレット |
 | `ANTHROPIC_API_KEY` | AIチャット用(Claude API)。ワークスペースに紐づいていないキーの場合は`ANTHROPIC_WORKSPACE_ID`も必要 |
 | `CLAUDE_MODEL` | 省略時は`claude-sonnet-5`(任意) |
 | `ANTHROPIC_WORKSPACE_ID` | `ANTHROPIC_API_KEY`がワークスペース未紐付きの場合のみ必要(任意) |
@@ -109,12 +111,22 @@ npm run db:seed          # 初期ADMINユーザーの作成(PINは別途スク�
 npm run dev              # Tailscale IP固定で起動(next dev -H <IP>)
 ```
 
-その他のコマンド: `npm run build` / `npm run start` / `npm run lint` / `npm run db:studio`(Prisma StudioでDBを直接確認)
+その他のコマンド: `npm run build` / `npm run start` / `npm run lint` / `npm run db:studio`(Prisma StudioでDBを直接確認) / `npm run tablecheck:import`(TableCheck CSVフォルダ取込を手動実行)
 
 ### 開発上の注意
 
 - このリポジトリはNext.jsのバージョンが新しく、一般的に知られている挙動と異なる場合があります。実装前に`node_modules/next/dist/docs/`配下の該当ドキュメントを確認してください(`AGENTS.md`参照)。
-- 本番運用はTailscaleのプライベートネットワーク上で直接HTTP配信する構成を想定しています(リバースプロキシなし)。
+- `lib/`配下の多くのファイルは先頭に`import "server-only"`がある。Next.jsのビルド内では自動的に無害化されるが、`scripts/`配下のようにtsxで直接実行する場合は`tsx --conditions=react-server <file>`のように`react-server`条件を付与しないとエラーになる(`package.json`の`tablecheck:import`参照)。
+
+## デプロイ・公開構成(2026-10-07〜)
+
+一般公開のため[Netlify](https://netlify.com)(無料プラン、商用利用の制限なし)にホスティングし、DBは[Neon](https://neon.com)のPostgres(無料枠)を使用している。GitHub(`main`ブランチ)への push で自動デプロイされる。
+
+- Netlifyのビルド時に`npm run build`(= `prisma generate && prisma migrate deploy && next build`)が実行され、マイグレーションも自動適用される
+- 顧客・財務データを含むため、PINログインに加えてHTTP Basic認証(`BASIC_AUTH_USER`/`BASIC_AUTH_PASS`、`proxy.ts`)をもう一段の壁として追加している(以前はTailscaleのプライベートネットワークがこの役割を担っていた)
+- Mac上の自前Next.jsサーバー(`com.noteai.server`、Tailscale用に`next start`を常駐させていたもの)は役割が重複するため2026-10-07に停止済み
+- TableCheck CSV半自動取込(`tablecheck-inbox/`)はローカルファイルシステムに依存するためNetlifyでは動かせず、引き続きMac上でlaunchd(`com.noteai.tablecheck-import`)が30分おきに`npm run tablecheck:import`を実行する形で稼働(DB接続先はNetlify版と同じPostgres)
+- MCPサーバー(`/api/mcp`)・AIチャットはNetlify上でそのまま動作する
 
 ## セキュリティ
 
